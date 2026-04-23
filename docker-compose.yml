@@ -1,0 +1,21 @@
+services:
+  event-hub:
+    build: .
+    container_name: event-hub
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    environment:
+      NODE_ENV: production
+      PORT: ${APP_PORT}
+      BASE_URL: ${BASE_URL}
+      GITHUB_URL: ${GITHUB_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      TOKENS_FILE: ${TOKENS_FILE}
+      ZITADEL_ISSUER: ${ZITADEL_ISSUER}
+      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID}
+      ZITADEL_CLIENT_SECRET: ${ZITADEL_CLIENT_SECRET}
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
