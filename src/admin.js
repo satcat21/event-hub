@@ -283,6 +283,7 @@ router.get('/admin', (req, res) => {
         let ws = null;
         let reconnectTimer = null;
         let shouldReconnect = false;
+        const seenEventTimestamps = new Set();
 
         function setStatus(msg, isError = false) {
             statusEl.textContent = msg;
@@ -309,6 +310,8 @@ router.get('/admin', (req, res) => {
                 ts: typeof evt?.ts === 'number' ? evt.ts : Date.now(),
                 payload: (evt && Object.prototype.hasOwnProperty.call(evt, 'payload')) ? evt.payload : evt,
             };
+            if (seenEventTimestamps.has(normalized.ts)) return;
+            seenEventTimestamps.add(normalized.ts);
             const item = document.createElement('div');
             item.className = 'event';
 
@@ -326,6 +329,7 @@ router.get('/admin', (req, res) => {
 
         function clearMonitorView() {
             eventsEl.innerHTML = '';
+            seenEventTimestamps.clear();
         }
 
         function getSavedActiveToken() {

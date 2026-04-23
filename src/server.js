@@ -12,6 +12,35 @@ import adminRouter from './admin.js';
 const app = express();
 const staticDir = fileURLToPath(new URL('./static', import.meta.url));
 
+// Deduplication for webhook broadcasts (3-second window per token)
+const recentWebhooks = new Map(); // token -> Map<payloadHash, timestamp>
+
+function getPayloadHash(payload) {
+    return JSON.stringify(payload);
+}
+
+function shouldBroadcast(token, payload) {
+    const hash = getPayloadHash(payload);
+    const now = Date.now();
+    const dedup = recentWebhooks.get(token) || new Map();
+    const lastSeen = dedup.get(hash);
+    
+    if (lastSeen && (now - lastSeen) < 3000) {
+        // Duplicate within 3-second window, skip broadcast
+        return false;
+    }
+    
+    // New or old webhook, allow broadcast and update timestamp
+    dedup.set(hash, now);
+    recentWebhooks.set(token, dedup);
+    
+    // Cleanup old entries periodically
+    const expired = Array.from(dedup.entries()).filter(([_, ts]) => (now - ts) > 3000);
+    expired.forEach(([h, _]) => dedup.delete(h));
+    
+    return true;
+}
+
 // Required when TLS is terminated by a reverse proxy (nginx/traefik/caddy).
 // Without this, secure session cookies may not be set and OIDC state is lost.
 if (process.env.NODE_ENV === 'production') {
@@ -235,19 +264,25 @@ app.post('/hook/:token', (req, res) => {
     const { token } = req.params;
     if (!hasToken(token)) return res.sendStatus(404);
 
+    console.log(`[WEBHOOK] POST /hook/${token}`, JSON.stringify(req.body));
     addEvent(token, req.body);
-    const ts = Date.now();
-    const payload = req.body;
-    const msgData = {
-        ts,
-        payload,
-        ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
-    };
-    const msg = JSON.stringify(msgData);
-    const clients = getChannel(token);
-    for (const ws of clients) {
-        if (ws.readyState === ws.OPEN) ws.send(msg);
+    
+    // Only broadcast to WebSocket clients if not a duplicate within 3-second window
+    if (shouldBroadcast(token, req.body)) {
+        const ts = Date.now();
+        const payload = req.body;
+        const msgData = {
+            ts,
+            payload,
+            ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
+        };
+        const msg = JSON.stringify(msgData);
+        const clients = getChannel(token);
+        for (const ws of clients) {
+            if (ws.readyState === ws.OPEN) ws.send(msg);
+        }
     }
+    
     res.sendStatus(200);
 });
 
