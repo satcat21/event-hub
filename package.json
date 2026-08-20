@@ -4,9 +4,9 @@
     "type": "module",
     "main": "src/server.js",
     "dependencies": {
-        "express": "^5.2.1",
-        "express-session": "^1.19.0",
-        "openid-client": "^6.8.3",
-        "ws": "^8.20.0"
+        "express": "5.2.1",
+        "express-session": "1.19.0",
+        "openid-client": "6.8.4",
+        "ws": "8.21.3"
     }
 }
