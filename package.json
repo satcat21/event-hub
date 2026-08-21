@@ -5,6 +5,7 @@
     "main": "src/server.js",
     "dependencies": {
         "express": "5.2.1",
+        "express-rate-limit": "8.6.2",
         "express-session": "1.19.0",
         "openid-client": "6.8.4",
         "ws": "8.21.3"

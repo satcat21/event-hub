@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
     getConfig,
     randomState,
@@ -16,9 +17,17 @@ import { listEvents, deleteEvents } from './events.js';
 
 const router = Router();
 
+// Throttles the OIDC endpoints to blunt brute-force/enumeration and credential-stuffing attempts.
+const authRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // ── Auth flow ────────────────────────────────────────────────────────────────
 
-router.get('/auth/login', async (req, res) => {
+router.get('/auth/login', authRateLimiter, async (req, res) => {
     const state = randomState();
     const nonce = randomNonce();
     const pkceCodeVerifier = randomPKCECodeVerifier();
@@ -37,7 +46,7 @@ router.get('/auth/login', async (req, res) => {
     res.redirect(url.href);
 });
 
-router.get('/auth/callback', async (req, res) => {
+router.get('/auth/callback', authRateLimiter, async (req, res) => {
     try {
         const currentUrl = new URL(`${process.env.BASE_URL}${req.url}`);
         const tokens = await authorizationCodeGrant(getConfig(), currentUrl, {
@@ -55,13 +64,11 @@ router.get('/auth/callback', async (req, res) => {
         delete req.session.returnTo;
         res.redirect(returnTo);
     } catch (err) {
-        const oauthError = err?.cause?.error || err?.error;
-        const oauthErrorDescription = err?.cause?.error_description || err?.error_description;
-        console.error('OIDC callback error:', {
-            message: err?.message,
-            error: oauthError,
-            error_description: oauthErrorDescription,
-        });
+        // Log only the standardized OAuth error code, never err.message/err.cause: the
+        // callback URL and provider error_description can carry the auth code, tokens,
+        // or user PII, and those must not land in clear-text logs.
+        const oauthError = err?.cause?.error || err?.error || 'unknown_error';
+        console.error('OIDC callback error:', oauthError);
         res.status(500).json({ error: 'Authentication failed' });
     }
 });
