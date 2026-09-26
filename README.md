@@ -67,20 +67,26 @@ Typical flow:
 ### Option A: Docker Compose (recommended)
 
 1. Copy .env.example to .env and set values.
-2. Build and run:
+2. Create the data directory and make it writable for the container user (uid 1000, `node`):
+
+```bash
+mkdir -p data && sudo chown 1000:1000 data
+```
+
+3. Build and run:
 
 ```bash
 docker compose up -d --build
 ```
 
-3. Open:
+4. Open:
 - BASE_URL/auth/login
 - after login you should be redirected to BASE_URL/admin
 
 ### Option B: Local Node.js
 
 Requirements:
-- Node.js 20+
+- Node.js 26+
 
 Steps:
 
@@ -110,7 +116,7 @@ Important values:
 
 ## Token Persistence
 
-Tokens are persisted to TOKENS_FILE. In Docker Compose, ./data is mounted to /app/data so tokens survive container restarts.
+Tokens are persisted to TOKENS_FILE. In Docker Compose, ./data is mounted to /app/data so tokens survive container restarts. The container runs as the unprivileged `node` user (uid 1000), so ./data must be owned by or writable for uid 1000 on the host.
 
 ## Zitadel OIDC Setup Guide
 

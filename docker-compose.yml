@@ -1,8 +1,15 @@
 services:
   event-hub:
-    build: .
+    build:
+      context: .
+      args:
+        PORT: ${APP_PORT}
     container_name: event-hub
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "${APP_PORT}:${APP_PORT}"
     environment:
