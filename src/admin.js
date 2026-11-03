@@ -11,7 +11,7 @@ import {
     fetchUserInfo,
     requireAuth,
 } from './oidc.js';
-import { createToken, listTokens, deleteToken } from './store.js';
+import { createToken, listTokens, deleteToken, hasToken } from './store.js';
 import { deleteChannel } from './channels.js';
 import { listEvents, deleteEvents } from './events.js';
 
@@ -563,8 +563,7 @@ router.get('/admin/tokens', (_req, res) => {
 
 router.get('/admin/events/:token', (req, res) => {
     const { token } = req.params;
-    const tokenExists = listTokens().some(t => t.token === token);
-    if (!tokenExists) return res.sendStatus(404);
+    if (!hasToken(token)) return res.sendStatus(404);
     res.json(listEvents(token));
 });
 

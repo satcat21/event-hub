@@ -1,45 +1,56 @@
 import http from 'http';
+import { createHash } from 'crypto';
 import express from 'express';
 import session from 'express-session';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import { getChannel, removeClient } from './channels.js';
+import { getChannel, peekChannel, removeClient } from './channels.js';
 import { hasToken, initStore } from './store.js';
 import { addEvent } from './events.js';
 import { initOIDC } from './oidc.js';
+import { PruningMemoryStore } from './sessionStore.js';
 import adminRouter from './admin.js';
 
 const app = express();
 const staticDir = fileURLToPath(new URL('./static', import.meta.url));
 
+const LOG_WEBHOOK_PAYLOADS = process.env.LOG_WEBHOOK_PAYLOADS === 'true';
+const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+const WS_HEARTBEAT_INTERVAL_MS = 30_000;
+// Clients only receive; they never need to send more than control frames.
+const WS_MAX_PAYLOAD_BYTES = 1024;
+
 // Deduplication for webhook broadcasts (3-second window per token)
+const DEDUP_WINDOW_MS = 3000;
 const recentWebhooks = new Map(); // token -> Map<payloadHash, timestamp>
 
-function getPayloadHash(payload) {
-    return JSON.stringify(payload);
-}
-
-function shouldBroadcast(token, payload) {
-    const hash = getPayloadHash(payload);
+function shouldBroadcast(token, serializedPayload) {
+    const hash = createHash('sha1').update(serializedPayload).digest('base64');
     const now = Date.now();
-    const dedup = recentWebhooks.get(token) || new Map();
-    const lastSeen = dedup.get(hash);
-    
-    if (lastSeen && (now - lastSeen) < 3000) {
-        // Duplicate within 3-second window, skip broadcast
-        return false;
+    let dedup = recentWebhooks.get(token);
+    if (!dedup) {
+        dedup = new Map();
+        recentWebhooks.set(token, dedup);
     }
-    
-    // New or old webhook, allow broadcast and update timestamp
+
+    const lastSeen = dedup.get(hash);
+    if (lastSeen && (now - lastSeen) < DEDUP_WINDOW_MS) return false;
+
     dedup.set(hash, now);
-    recentWebhooks.set(token, dedup);
-    
-    // Cleanup old entries periodically
-    const expired = Array.from(dedup.entries()).filter(([_, ts]) => (now - ts) > 3000);
-    expired.forEach(([h, _]) => dedup.delete(h));
-    
     return true;
 }
+
+// Periodic sweep instead of per-request cleanup; also drops tokens with no recent hooks
+// (including deleted tokens).
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, dedup] of recentWebhooks) {
+        for (const [hash, ts] of dedup) {
+            if (now - ts >= DEDUP_WINDOW_MS) dedup.delete(hash);
+        }
+        if (dedup.size === 0) recentWebhooks.delete(token);
+    }
+}, DEDUP_WINDOW_MS * 5).unref();
 
 // Required when TLS is terminated by a reverse proxy (nginx/traefik/caddy).
 // Without this, secure session cookies may not be set and OIDC state is lost.
@@ -52,12 +63,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/static', express.static(staticDir));
 app.use(session({
     secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
+    store: new PruningMemoryStore(),
     resave: false,
     saveUninitialized: false,
     cookie: {
         secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
         sameSite: 'lax',
+        maxAge: SESSION_MAX_AGE_MS,
     },
 }));
 
@@ -264,32 +277,35 @@ app.post('/hook/:token', (req, res) => {
     const { token } = req.params;
     if (!hasToken(token)) return res.sendStatus(404);
 
-    console.log(`[WEBHOOK] POST /hook/${token}`, JSON.stringify(req.body));
-    addEvent(token, req.body);
-    
-    // Only broadcast to WebSocket clients if not a duplicate within 3-second window
-    if (shouldBroadcast(token, req.body)) {
-        const ts = Date.now();
-        const payload = req.body;
-        const msgData = {
-            ts,
+    const payload = req.body;
+    const serialized = JSON.stringify(payload) ?? '';
+    if (LOG_WEBHOOK_PAYLOADS) {
+        console.log(`[WEBHOOK] POST /hook/${token}`, serialized);
+    } else {
+        console.log(`[WEBHOOK] POST /hook/${token} (${Buffer.byteLength(serialized)} bytes)`);
+    }
+    addEvent(token, payload);
+
+    // Only broadcast to WebSocket clients if not a duplicate within the dedup window
+    const clients = peekChannel(token);
+    if (shouldBroadcast(token, serialized) && clients?.size) {
+        const msg = JSON.stringify({
+            ts: Date.now(),
             payload,
             ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
-        };
-        const msg = JSON.stringify(msgData);
-        const clients = getChannel(token);
+        });
         for (const ws of clients) {
             if (ws.readyState === ws.OPEN) ws.send(msg);
         }
     }
-    
+
     res.sendStatus(200);
 });
 
 // ── Server + WebSocket ───────────────────────────────────────────────────────
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
 wss.on('connection', (ws, req) => {
     const match = req.url?.match(/^\/ws\/([^/?]+)/);
@@ -300,10 +316,26 @@ wss.on('connection', (ws, req) => {
         return;
     }
 
-    const channel = getChannel(token);
-    channel.add(ws);
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('error', err => console.warn('[WS] client error:', err.message));
     ws.on('close', () => removeClient(token, ws));
+    getChannel(token).add(ws);
 });
+
+// Heartbeat: terminate clients that vanished without a close frame (NAT timeouts,
+// dropped mobile connections) so they don't linger in channels forever.
+const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+        if (ws.isAlive === false) {
+            ws.terminate();
+            continue;
+        }
+        ws.isAlive = false;
+        ws.ping();
+    }
+}, WS_HEARTBEAT_INTERVAL_MS);
+wss.on('close', () => clearInterval(heartbeat));
 
 async function start() {
     await initStore();

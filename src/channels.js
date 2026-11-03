@@ -5,8 +5,16 @@ export function getChannel(token) {
     return channels.get(token);
 }
 
+// Read-only lookup: does not allocate an empty channel for tokens without listeners.
+export function peekChannel(token) {
+    return channels.get(token);
+}
+
 export function removeClient(token, ws) {
-    channels.get(token)?.delete(ws);
+    const ch = channels.get(token);
+    if (!ch) return;
+    ch.delete(ws);
+    if (ch.size === 0) channels.delete(token);
 }
 
 export function deleteChannel(token) {

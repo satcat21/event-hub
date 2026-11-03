@@ -110,6 +110,7 @@ Important values:
 - GITHUB_URL: repository URL shown on landing page
 - SESSION_SECRET: express-session signing secret
 - TOKENS_FILE: file path for persisted tokens
+- LOG_WEBHOOK_PAYLOADS: set to `true` to log full webhook payloads (default logs only token and size)
 - ZITADEL_ISSUER: Zitadel issuer URL
 - ZITADEL_CLIENT_ID: Zitadel app client ID
 - ZITADEL_CLIENT_SECRET: optional for confidential client, empty for public PKCE client
@@ -192,4 +193,4 @@ This is a GET availability check only. Real webhook delivery must use POST.
 
 - Replace SESSION_SECRET in production.
 - Use HTTPS in front of the app.
-- For production scale, replace in-memory session store with Redis or another shared store.
+- Admin sessions expire after 8 hours and are kept in an in-memory store that evicts expired sessions. For multi-instance deployments, replace it with Redis or another shared store.
